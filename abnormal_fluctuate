@@ -1,0 +1,105 @@
+#########################################################################
+#
+# made by Marshaw
+#
+# excel的起始日期是1899-12-30
+#
+# 最新更新：9/1/2024
+# AWS导出的csv档案计算异常交易客户的盈利
+#
+#######################################################################
+
+rm(list=ls())
+
+library(readxl)
+library(dplyr)
+library(openxlsx)
+library(officer)
+library(flextable)
+library(readxl)
+
+#########################################   导入资料   ########################################################################
+##验证的资料
+wb <- loadWorkbook("Downloads/异常涨跌幅盈利大于5000qc.xlsx") 
+sheet_names <- names(wb)
+data_check <- read.xlsx(wb, sheet = 1) 
+data_check <- data_check[,c("member_id","解除时间", "交易对")]
+
+#AWS的资料
+data1 <- read.csv("/Users/marshaw/Downloads/62c190fd-e503-401b-9903-d9e53e132a95.csv")#这要改
+data1[,5]<- as.POSIXct(data1[,5] %>% unlist(), tz = "UTC") %>% as.data.frame()
+
+#################################################################################################################
+# 加载 lubridate 包
+library(lubridate)
+# 减去两个小时
+data_check[,"解除时间"]<- as.POSIXct(data_check[,"解除时间"] %>% unlist(), tz = "UTC") %>% as.data.frame()
+start_time <- data_check$解除时间 - hours(2)
+data_check <- cbind(data_check[,1], start_time, data_check[,c(2:3)])
+data_check[,2]<- as.POSIXct(data_check[,2] %>% unlist(), tz = "UTC") %>% as.data.frame()
+
+##这要做什么？解除时间取最晚，2小时前取最早
+list_check <- split(data_check, f = data_check[,1])
+data_check1 <- NULL
+for (i in 1:length(list_check)) {
+  cat(i,"/",length(list_check),"\n")
+  
+  rawdata1 <- list_check[[i]]
+  member_id <- rawdata1[1,1]
+  start_time <- min(rawdata1[,2])
+  end_time <- max(rawdata1[,3])
+  crypto_check <- rawdata1[1,4]
+  tem_data_check <- cbind(member_id, start_time, end_time, crypto_check)
+  data_check1 <- rbind(data_check1,tem_data_check)
+}
+data_check1 <- data_check1 %>% as.data.frame()
+colnames(data_check1) <- c("member_id", "解除时间两小时前","解除时间","交易对")
+data_check1[,2] <- as.POSIXct(data_check1[,2] %>% as.numeric(), origin = "1970-01-01", tz = "UTC")
+data_check1[,3] <- as.POSIXct(data_check1[,3] %>% as.numeric(), origin = "1970-01-01", tz = "UTC")
+rm(data_check, tem_data_check, rawdata1, list_check)
+data_check <- data_check1
+# 使用 gsub() 函数将下划线 "_" 替换为连字符 "-"
+data_check[,4] <- gsub("_", "-", data_check[,4])
+
+
+# 禁用科学计数法
+options(scipen = 999)
+
+list_data <- split(data1, f = data1$member_id)
+data2 <- NULL
+for (i in 1:length(list_data)) {
+  cat(i,"/",length(list_data),"\n")
+  
+  rawdata1 <- list_data[[i]]
+  temdata_check <- data_check %>% filter(data_check$member_id == rawdata1[1,1])
+  start_time_check <- temdata_check[1,2]
+  end_time_check <- temdata_check[1,3]
+  crypto_check <- temdata_check[1,4]
+  rawdata2 <- rawdata1 %>% filter(rawdata1$symbol == crypto_check)
+  rawdata2 <- rawdata2 %>% filter(rawdata2$create_time > start_time_check )
+  rawdata2 <- rawdata2 %>% filter(rawdata2$create_time < end_time_check)
+  rawdata1 <- rawdata2
+  rm(rawdata2)
+  
+  tem <- rawdata1 %>% filter(rawdata1$side == "SELL")
+  sell <- sum(tem$amount_usdt) %>% as.numeric()
+  tem1 <- rawdata1 %>% filter(rawdata1$side == "BUY")
+  buy <- sum(tem1$amount_usdt) %>% as.numeric()
+  profit <- buy-sell
+  symbol <- tem[1,2]
+  data1 <- cbind(tem[1,1], symbol, buy, sell, profit)
+  data2 <- rbind(data2,data1)
+}
+
+colnames(data2) <- c("member_id","交易币种", "买量(USDT)", "卖量(USDT)","买卖金额差")
+data2[,5] <- data2[,5] %>% as.numeric()
+data2 <- data2[order(-as.numeric(data2[, 5]),decreasing = T), ]
+is_fengkong <- data2[,5] > "-5000"
+is_fengkong
+
+wb <- createWorkbook()
+addWorksheet(wb, "盈利异常客户")
+writeData(wb, "盈利异常客户", data2)
+# 保存 Excel 文件
+saveWorkbook(wb, "Downloads/盈利异常客户.xlsx", overwrite = TRUE)
+
